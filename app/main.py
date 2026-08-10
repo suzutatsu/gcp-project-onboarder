@@ -1,8 +1,9 @@
 import asyncio
 import logging
+import re
 import time
 from typing import Dict, Any
-from fastapi import FastAPI, Request, Response, HTTPException, BackgroundTasks, status
+from fastapi import FastAPI, Request, HTTPException, BackgroundTasks, status
 from app.config import settings
 from app.security.hmac_verifier import verify_teams_signature
 from app.security.guardrails import validate_request_guardrails, GuardrailValidationError
@@ -64,10 +65,52 @@ async def handle_teams_webhook(request: Request, background_tasks: BackgroundTas
     body_json = await request.json()
     user_text = body_json.get("text", "")
     requester = body_json.get("from", {}).get("name", "Teams User")
+    card_value = body_json.get("value") or body_json.get("data") or {}
 
     logger.info(f"[WEBHOOK受信] 申請者 '{requester}' からメッセージを受信: '{user_text}'")
 
-    # 2. Webhook Event Deduplication Check (Prevents duplicate messages & cards from Teams retries)
+    # 2. Check for Approval Submit Actions (from Adaptive Card Action.Submit or text command)
+    approval_token = None
+    if isinstance(card_value, dict):
+        approval_token = (
+            card_value.get("token")
+            or card_value.get("msteams", {}).get("value", {}).get("token")
+        )
+        if approval_token:
+            logger.info(f"[カード承認ボタン押下] Adaptive Card の Action.Submit より承認トークンを受信しました (承認者: '{requester}')。")
+
+    if not approval_token and isinstance(body_json, dict) and body_json.get("token"):
+        approval_token = body_json.get("token")
+        logger.info(f"[JSON承認アクション受信] トークンパラメータを受信しました (承認者: '{requester}')。")
+
+    if not approval_token and "token:" in user_text:
+        token_match = re.search(r"token:([\w\.-]+)", user_text)
+        if token_match:
+            approval_token = token_match.group(1)
+            logger.info(f"[手動承認コマンド受信] 文面より承認トークンを抽出しました (承認者: '{requester}')。")
+
+    if approval_token:
+        try:
+            result = await execute_approval_action(approval_token, approver=requester)
+            msg = result.get("message", "承認処理が正常に完了しました。")
+            return {
+                "type": "message",
+                "text": f"**[承認完了]**\n\n{msg}"
+            }
+        except HTTPException as he:
+            logger.warning(f"[承認エラー] 承認処理に失敗しました: {he.detail}")
+            return {
+                "type": "message",
+                "text": f"**[承認エラー]** {he.detail}"
+            }
+        except Exception as exc:
+            logger.error(f"[承認例外エラー] 承認処理中に例外が発生しました: {exc}", exc_info=True)
+            return {
+                "type": "message",
+                "text": f"**[承認エラー]** 承認処理中にシステムエラーが発生しました: {exc}"
+            }
+
+    # 3. Webhook Event Deduplication Check (Prevents duplicate messages & cards from Teams retries)
     now = time.time()
     dedup_key = f"{requester}:{user_text.strip()}"
     if dedup_key in _PROCESSED_WEBHOOK_CACHE:
@@ -99,13 +142,13 @@ async def handle_teams_webhook(request: Request, background_tasks: BackgroundTas
             logger.warning(f"[ガードレール判定案内] {e}")
             return {
                 "type": "message",
-                "text": f"ℹ️ **申請案内:** {e}"
+                "text": f"**[申請案内]** {e}"
             }
         except Exception as e:
             logger.error(f"[パース例外] リクエスト処理中にエラーが発生しました: {e}", exc_info=True)
             return {
                 "type": "message",
-                "text": f"❌ **システムエラー:** リクエストの処理中にエラーが発生しました: {e}"
+                "text": f"**[システムエラー]** リクエストの処理中にエラーが発生しました: {e}"
             }
     else:
         # SEPARATE ADMIN CHANNEL MODE: Delegate card posting to background task and return instant receipt
@@ -113,7 +156,7 @@ async def handle_teams_webhook(request: Request, background_tasks: BackgroundTas
         background_tasks.add_task(process_iam_request_async, payload)
         return {
             "type": "message",
-            "text": "✅ **申請受付完了**\nご依頼を受理しました。管理者専用チャネルへ承認リクエストを送信しました。"
+            "text": "**[申請受付完了]**\nご依頼を受理しました。管理者専用チャネルへ承認リクエストを送信しました。"
         }
 
 
@@ -187,11 +230,11 @@ async def process_iam_request_async(payload: Dict[str, Any]):
             logger.warning("[送信警告] 管理者チャネルへの承認カード投稿に失敗しました。")
 
     except GuardrailValidationError as e:
-        error_msg = f"ℹ️ **申請案内 / セキュリティ判定:** {e}"
+        error_msg = f"**[申請案内 / セキュリティ判定]** {e}"
         logger.warning(f"[ガードレール判定結果] {e}")
         await send_teams_text_message_async(settings.notification_webhook_url or settings.admin_webhook_url, error_msg)
     except Exception as e:
-        error_msg = f"❌ **リクエスト処理中にエラーが発生しました:** {e}"
+        error_msg = f"**[リクエストエラー]** リクエスト処理中にエラーが発生しました: {e}"
         logger.error(f"[パイプラインエラー] 予期せぬシステム例外が発生しました: {e}", exc_info=True)
         await send_teams_text_message_async(settings.admin_webhook_url, error_msg, title="システムエラー")
 
@@ -248,12 +291,12 @@ async def execute_approval_action(token: str, approver: str = "Administrator") -
 
         # 4. Completion notice goes to original request channel thread / notification channel
         logger.info("[実行ステップ 4/4: 通知送信] Teams チャネルへ処理完了通知を送信中...")
-        completion_text = f"🎉 **申請の処理が完了しました**\n\n{success_message}\n(承認者: {approver})"
+        completion_text = f"**[申請処理完了]**\n\n{success_message}\n(承認者: {approver})"
         await send_teams_text_message_async(settings.notification_webhook_url or settings.admin_webhook_url, completion_text)
         
         # Log to Admin Channel as well if configured
         if settings.admin_webhook_url:
-            admin_log_text = f"ℹ️ **承認完了ログ** (ID: {req_id})\n{success_message} (承認者: {approver})"
+            admin_log_text = f"**[承認完了ログ]** (ID: {req_id})\n{success_message} (承認者: {approver})"
             await send_teams_text_message_async(settings.admin_webhook_url, admin_log_text)
 
         logger.info(f"[承認ワークフロー完了] 申請ID '{req_id}' の一連の処理が正常に完結しました。")
@@ -265,10 +308,10 @@ async def execute_approval_action(token: str, approver: str = "Administrator") -
         }
 
     except Exception as e:
-        error_msg = f"❌ **権限実行エラー (ID: {req_id}):** {e}"
+        error_msg = f"**[権限実行エラー]** (ID: {req_id}): {e}"
         logger.error(f"[API実行エラー] Google Workspace 操作の実行に失敗しました: {e}", exc_info=True)
         if settings.admin_webhook_url:
-            await send_teams_text_message_async(settings.admin_webhook_url, error_msg, title="⚠️ Google Workspace 処理エラー")
+            await send_teams_text_message_async(settings.admin_webhook_url, error_msg, title="[Google Workspace 処理エラー]")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"権限実行エラー: {str(e)}"

@@ -10,8 +10,8 @@ def build_admin_approval_card_payload(request_data: Dict[str, Any], signed_token
     Constructs the Teams Adaptive Card payload JSON structure for human approval.
     """
     action_label = {
-        "add_member": "➕ グループメンバー追加",
-        "remove_member": "➖ グループメンバー削除"
+        "add_member": "グループメンバー追加",
+        "remove_member": "グループメンバー削除"
     }.get(request_data.get("action"), request_data.get("action"))
 
     req_id = request_data.get("req_id", "REQ-NEW")
@@ -32,7 +32,7 @@ def build_admin_approval_card_payload(request_data: Dict[str, Any], signed_token
                             "size": "Large",
                             "weight": "Bolder",
                             "color": "Attention",
-                            "text": "🛡️ Google Workspace グループ管理 承認リクエスト"
+                            "text": "[承認リクエスト] Google Workspace グループ管理"
                         },
                         {
                             "type": "TextBlock",
@@ -51,7 +51,7 @@ def build_admin_approval_card_payload(request_data: Dict[str, Any], signed_token
                         },
                         {
                             "type": "TextBlock",
-                            "text": f"💬 **手動コマンド承認の場合:**\n`@GCP Onboarder 承認 token:{signed_token}`",
+                            "text": f"**手動コマンド承認の場合:**\n`@GCP Onboarder 承認 token:{signed_token}`",
                             "wrap": True,
                             "size": "Small",
                             "isSubtle": True
@@ -60,8 +60,17 @@ def build_admin_approval_card_payload(request_data: Dict[str, Any], signed_token
                     "actions": [
                         {
                             "type": "Action.Submit",
-                            "title": "✅ 承認して自動実行",
+                            "title": "承認して自動実行",
                             "data": {
+                                "msteams": {
+                                    "type": "messageBack",
+                                    "displayText": "承認処理を実行中...",
+                                    "text": f"承認 token:{signed_token}",
+                                    "value": {
+                                        "action": "approve",
+                                        "token": signed_token
+                                    }
+                                },
                                 "action": "approve",
                                 "token": signed_token
                             }
