@@ -28,6 +28,13 @@ app = FastAPI(
 )
 
 
+import time
+
+# In-Memory Webhook Deduplication Cache: (requester:text) -> timestamp
+_PROCESSED_WEBHOOK_CACHE: Dict[str, float] = {}
+DEDUPLICATION_TTL_SECONDS = 15.0
+
+
 @app.get("/health")
 def health_check():
     """Health check endpoint for Cloud Run container probes."""
@@ -62,16 +69,27 @@ async def handle_teams_webhook(request: Request, background_tasks: BackgroundTas
 
     logger.info(f"[WEBHOOK受信] 申請者 '{requester}' からメッセージを受信: '{user_text}'")
 
+    # 2. Webhook Event Deduplication Check (Prevents duplicate messages & cards from Teams retries)
+    now = time.time()
+    dedup_key = f"{requester}:{user_text.strip()}"
+    if dedup_key in _PROCESSED_WEBHOOK_CACHE:
+        last_time = _PROCESSED_WEBHOOK_CACHE[dedup_key]
+        if now - last_time < DEDUPLICATION_TTL_SECONDS:
+            logger.info(f"[重複Webhook検知] 申請者 '{requester}' からの直前同文面リクエストの重複送信を検知しました。重複処理と2重返信をスキップします。")
+            return {"type": "message", "text": ""}
+
+    _PROCESSED_WEBHOOK_CACHE[dedup_key] = now
+
     payload = {
         "text": user_text,
         "requester": requester
     }
 
-    # 2. Enqueue background task for LLM parsing & Admin card posting
+    # 3. Enqueue background task for LLM parsing & Admin card posting
     background_tasks.add_task(process_iam_request_async, payload)
     logger.info("[即時応答] バックグラウンドタスクをキューに登録。Teams へ即時 200 OK 応答を返却します (<50ms)。")
 
-    # 3. Respond immediately to Teams (< 50ms response to guarantee < 5s SLA)
+    # 4. Respond immediately to Teams (< 50ms response to guarantee < 5s SLA)
     return {
         "type": "message",
         "text": "✅ **申請受付完了**\nご依頼を受理しました。AIがメッセージ内容を解析し、管理者の承認手続きへ進行します。"
