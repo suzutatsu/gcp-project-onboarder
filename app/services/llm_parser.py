@@ -54,7 +54,8 @@ def parse_request_with_llm(user_message: str) -> Dict[str, Any]:
         from google import genai
         from google.genai import types
 
-        client = genai.Client(project=settings.gcp_project_id, location=settings.gcp_location)
+        project_id = settings.gcp_project_id if settings.gcp_project_id else None
+        client = genai.Client(project=project_id, location=settings.gcp_location)
 
         response = client.models.generate_content(
             model=settings.gemini_model_name,

@@ -57,8 +57,7 @@ gcloud run deploy gcp-project-onboarder \
     --image gcr.io/<PROJECT_ID>/gcp-project-onboarder \
     --region asia-northeast1 \
     --service-account="gcp-bot-sa@<PROJECT_ID>.iam.gserviceaccount.com" \
-    --set-secrets="TEAMS_SECURITY_TOKEN=TEAMS_SECURITY_TOKEN:latest" \
-    --set-env-vars GCP_PROJECT_ID="<PROJECT_ID>"
+    --set-secrets="TEAMS_SECURITY_TOKEN=TEAMS_SECURITY_TOKEN:latest"
 ```
 
 ### 2. Google Workspace グループ側での権限設定
@@ -173,8 +172,7 @@ gcloud run deploy gcp-project-onboarder \
     --region asia-northeast1 \
     --service-account="gcp-bot-sa@<PROJECT_ID>.iam.gserviceaccount.com" \
     --allow-unauthenticated \
-    --set-secrets="TEAMS_SECURITY_TOKEN=TEAMS_SECURITY_TOKEN:latest" \
-    --set-env-vars GCP_PROJECT_ID="<PROJECT_ID>"
+    --set-secrets="TEAMS_SECURITY_TOKEN=TEAMS_SECURITY_TOKEN:latest"
 ```
 
 ---

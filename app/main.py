@@ -161,8 +161,6 @@ async def execute_approval_action(token: str, approver: str = "Administrator") -
     action = request_data.get("action")
     group_email = request_data.get("group_email")
     member_email = request_data.get("member_email")
-    role = request_data.get("role")
-    project_id = request_data.get("project_id", settings.gcp_project_id)
     req_id = request_data.get("req_id", "REQ")
 
     api_response = {}
