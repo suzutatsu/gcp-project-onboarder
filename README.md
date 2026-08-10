@@ -35,12 +35,13 @@ Teams チャネルで `@GCP Onboarder` 宛てに自然言語メッセージを�
 ```
 
 ### アウトプット (Output)
-1. **依頼チャネルへの受付応答**
-   - メッセージ受信後、即座（0.05秒以下）に受付完了（または不足情報の案内）を返信します。
-2. **管理者チャネルへの承認リクエスト送信**
-   - 管理者専用チャネルに承認ボタン付きの Adaptive Card を自動送信します。
+1. **単一チャネルモード (`ADMIN_WEBHOOK_URL` 未設定・初期/テスト運用)**
+   - 依頼チャネルでメンションされると、0.3 秒以内に自然言語解析を行い、**承認ボタン付き Adaptive Card 1 件**を直接返答します。
+2. **複数チャネルモード (`ADMIN_WEBHOOK_URL` 設定時・本番運用)**
+   - 依頼チャネル: 「管理者チャネルへ承認リクエストを送信しました」と即時返信します。
+   - 管理者専用チャネル: 承認ボタン付き Adaptive Card を送信します。
 3. **処理完了通知**
-   - 管理者が承認ボタンを押すと API が実行され、依頼チャネルおよび管理者チャネルに完了報告が送信されます。
+   - 管理者が承認ボタンを押すと API が自動実行され、完了報告が送信されます。
 
 ---
 
@@ -49,14 +50,15 @@ Teams チャネルで `@GCP Onboarder` 宛てに自然言語メッセージを�
 本ツールが Google API を呼び出す際に使用するサービスアカウントの設定方法です。
 
 ### 1. 本番環境 (Cloud Run) での設定
-Cloud Run にデプロイする際、実行用のサービスアカウントを指定します。
+Cloud Run にデプロイする際、実行用のサービスアカウントを指定します。（IAM ロールとして `Vertex AI ユーザー (roles/aiplatform.user)` を付与してください）
 
 ```bash
 # 例: サービスアカウントおよび Secret Manager を指定して Cloud Run デプロイ
 gcloud run deploy gcp-project-onboarder \
-    --image gcr.io/<PROJECT_ID>/gcp-project-onboarder \
-    --region asia-northeast1 \
+    --source . \
+    --region us-central1 \
     --service-account="gcp-bot-sa@<PROJECT_ID>.iam.gserviceaccount.com" \
+    --allow-unauthenticated \
     --set-secrets="TEAMS_SECURITY_TOKEN=TEAMS_SECURITY_TOKEN:latest"
 ```
 
@@ -108,7 +110,8 @@ export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service-account-key.json"
 
 | パラメータ名 | デフォルト値 / 設定例 | 説明 |
 | :--- | :--- | :--- |
-| **`GEMINI_MODEL_NAME`** | `gemini-flash-lite` | 自然言語解析に使用する Gemini のモデル名。 |
+| **`GCP_LOCATION`** | `us-central1` | Google Cloud のリージョン。Gemini 3.5 モデル利用のため `us-central1` 推奨。 |
+| **`GEMINI_MODEL_NAME`** | `gemini-3.5-flash-lite` | 自然言語解析に使用する Gemini のモデル名。 |
 | **`DEFAULT_GROUP_EMAIL`** | 空 (例: `group-dev@example.com`) | メッセージ内でグループメールアドレスが省略された場合に使用されるデフォルトのグループアドレス。 |
 | **`ALLOWED_EMAIL_DOMAINS`** | 空 (例: `example.com`) | 申請を許可するユーザーのメールアドレスドメインのカンマ区切りリスト。空の場合はドメイン制限なし。 |
 | **`TOKEN_TTL_SECONDS`** | `259200` (3日間) | 承認ボタン（トークン）の有効期限（秒）。 |
@@ -123,19 +126,20 @@ export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service-account-key.json"
 ```
 gcp-project-onboarder/
 ├── app/
-│   ├── main.py                   # FastAPI Webhook, 背景タスク, 承認エンドポイント
+│   ├── main.py                   # FastAPI Webhook, 重複排除, 単一/複数チャネル制御
 │   ├── config.py                 # アプリケーション設定管理
 │   ├── security/
 │   │   ├── hmac_verifier.py      # Teams HMAC-SHA256 署名検証
 │   │   ├── token_service.py      # DBレス HMAC 署名トークン生成・検証
-│   │   └── guardrails.py         # 入力検証・セキュリティガードレール
+│   │   └── guardrails.py         # 入力検証・デフォルトグループ補填
 │   └── services/
-│       ├── llm_parser.py         # Gemini による自然言語解析
+│       ├── llm_parser.py         # Gemini (Vertex AI) による自然言語解析
 │       ├── workspace_service.py  # Google Cloud Identity Groups API 連携
 │       ├── teams_notifier.py     # Teams 通知・Adaptive Card 送信
 │       └── secret_manager_service.py # Secret Manager 連携
 ├── tests/                        # テストコード
 ├── Dockerfile                    # Docker イメージビルド用ファイル
+├── .gcloudignore                 # Cloud Run デプロイ時除外設定
 ├── requirements.txt              # 依存パッケージ
 ├── .env.example                  # 環境変数設定サンプル
 └── README.md
@@ -166,7 +170,7 @@ gcloud secrets create TEAMS_SECURITY_TOKEN --data-file=- <<< "your_teams_outgoin
 # 2. Cloud Run へソースコードから直接デプロイ (ビルド＆デプロイを1コマンドで実行)
 gcloud run deploy gcp-project-onboarder \
     --source . \
-    --region asia-northeast1 \
+    --region us-central1 \
     --service-account="gcp-bot-sa@<PROJECT_ID>.iam.gserviceaccount.com" \
     --allow-unauthenticated \
     --set-secrets="TEAMS_SECURITY_TOKEN=TEAMS_SECURITY_TOKEN:latest"
