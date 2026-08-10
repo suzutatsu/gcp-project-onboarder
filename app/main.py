@@ -158,7 +158,7 @@ async def process_iam_request_async(payload: Dict[str, Any]):
 
     try:
         # Step 1: LLM Parsing
-        logger.info("[ステップ 1/4: AIパース] Gemini Flash Lite で申請文面を自然言語解析中...")
+        logger.info("[ステップ 1/4: AIパース] Gemini で申請文面を自然言語解析中...")
         parsed_request = await asyncio.to_thread(parse_request_with_llm, user_text)
         parsed_request["requester"] = requester
         logger.info(f"[ステップ 1/4 完了] 解析結果: アクション='{parsed_request.get('action')}', 対象グループ='{parsed_request.get('group_email')}', 対象メンバー='{parsed_request.get('member_email')}'")

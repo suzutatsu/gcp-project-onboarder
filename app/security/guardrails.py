@@ -36,12 +36,16 @@ def validate_request_guardrails(
             f"許可されていないアクションです: '{action}'. (許可アクション: {', '.join(sorted(ALLOWED_ACTIONS))})"
         )
 
-    # 1. Validate Group Email Format (Apply DEFAULT_GROUP_EMAIL fallback if unassigned)
+    # 1. Validate Group Email Format (Sanitize null/none strings & apply DEFAULT_GROUP_EMAIL fallback if unassigned)
     group_email = request.get("group_email")
-    if not group_email and settings.default_group_email:
-        group_email = settings.default_group_email
-        request["group_email"] = group_email
-        logger.info(f"[ガードレール補正] グループ未指定のためデフォルトグループ '{group_email}' を適用しました。")
+    if not group_email or str(group_email).strip().lower() in ["null", "none", "undefined", ""]:
+        if settings.default_group_email:
+            group_email = settings.default_group_email
+            request["group_email"] = group_email
+            logger.info(f"[ガードレール補正] グループ未指定のためデフォルトグループ '{group_email}' を適用しました。")
+        else:
+            group_email = None
+            request["group_email"] = None
 
     if not group_email:
         raise GuardrailValidationError("対象のGoogleグループが判別できませんでした。グループメールアドレス（例: group-dev@company.com）を明記して再度ご依頼ください。")
@@ -51,6 +55,10 @@ def validate_request_guardrails(
 
     # 2. Validate Member Email
     member_email = request.get("member_email")
+    if member_email and str(member_email).strip().lower() in ["null", "none", "undefined", ""]:
+        member_email = None
+        request["member_email"] = None
+
     if not member_email:
         raise GuardrailValidationError("対象メンバーのメールアドレスが提示されていません。メールアドレス（例: user@company.com）を含めて再度メッセージを送ってください。")
     if not EMAIL_REGEX.match(member_email):

@@ -33,14 +33,15 @@ def parse_request_with_llm(user_message: str) -> Dict[str, Any]:
     """
     Parses a user message using Gemini Flash (Vertex AI):
     1. In-Memory Cache Check -> Returns cached result if model + message key exists
-    2. Gemini SDK Call -> Uses settings.gemini_model_name and handles region fallback if unavailable in asia-northeast1
+    2. Gemini SDK Call -> Executes Vertex AI API directly with settings.gemini_model_name and 3s timeout
 
     :param user_message: Natural language request message from Teams user
     :return: Dictionary containing parsed action, group_email, member_email
     """
     cleaned_message = _clean_teams_mention(user_message)
     model_name = settings.gemini_model_name
-    logger.info(f"[AIパース開始] Gemini ({model_name}, リージョン: {settings.gcp_location}) で解析中: '{cleaned_message}'")
+    
+    logger.info(f"[AIパース開始] Gemini (モデルID: '{model_name}', リージョン: {settings.gcp_location}) で解析中: '{cleaned_message}'")
 
     # Key includes model_name so changing GEMINI_MODEL_NAME invalidates old cached parsing results
     cache_key = f"{model_name}:{cleaned_message}"
@@ -60,7 +61,6 @@ def parse_request_with_llm(user_message: str) -> Dict[str, Any]:
 
         project_id = settings.gcp_project_id.strip() if settings.gcp_project_id and settings.gcp_project_id.strip() else None
         
-        # Primary regional client configuration (e.g. asia-northeast1)
         client = genai.Client(
             vertexai=True,
             project=project_id,
@@ -68,40 +68,16 @@ def parse_request_with_llm(user_message: str) -> Dict[str, Any]:
             http_options=types.HttpOptions(timeout=3000)
         )
 
-        try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=cleaned_message,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
-                    response_mime_type="application/json",
-                    temperature=0.0,
-                    max_output_tokens=settings.llm_cost_max_output_tokens
-                )
+        response = client.models.generate_content(
+            model=model_name,
+            contents=cleaned_message,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+                response_mime_type="application/json",
+                temperature=0.0,
+                max_output_tokens=settings.llm_cost_max_output_tokens
             )
-        except Exception as err:
-            err_str = str(err).lower()
-            # If specified model is unavailable in target region (e.g. 404 NOT_FOUND in asia-northeast1), attempt us-central1 fallback
-            if "404" in err_str or "not found" in err_str:
-                logger.warning(f"[リージョンモデル未対応] モデル '{model_name}' はリージョン '{settings.gcp_location}' で未提供です。us-central1 または GAモデルへフォールバックします ({err})...")
-                fallback_client = genai.Client(
-                    vertexai=True,
-                    project=project_id,
-                    location="us-central1",
-                    http_options=types.HttpOptions(timeout=3000)
-                )
-                response = fallback_client.models.generate_content(
-                    model=model_name,
-                    contents=cleaned_message,
-                    config=types.GenerateContentConfig(
-                        system_instruction=SYSTEM_PROMPT,
-                        response_mime_type="application/json",
-                        temperature=0.0,
-                        max_output_tokens=settings.llm_cost_max_output_tokens
-                    )
-                )
-            else:
-                raise err
+        )
 
         response_text = response.text.strip() if response.text else "{}"
         if response_text.startswith("```"):
@@ -110,9 +86,14 @@ def parse_request_with_llm(user_message: str) -> Dict[str, Any]:
 
         parsed_result = json.loads(response_text)
 
-        # Apply default group email fallback if group_email is missing
-        if not parsed_result.get("group_email") and settings.default_group_email:
-            parsed_result["group_email"] = settings.default_group_email
+        # Sanitize null/none string values from LLM JSON and apply DEFAULT_GROUP_EMAIL fallback if omitted
+        raw_group = parsed_result.get("group_email")
+        if not raw_group or str(raw_group).strip().lower() in ["null", "none", "undefined", ""]:
+            parsed_result["group_email"] = settings.default_group_email if settings.default_group_email else None
+
+        raw_member = parsed_result.get("member_email")
+        if raw_member and str(raw_member).strip().lower() in ["null", "none", "undefined", ""]:
+            parsed_result["member_email"] = None
 
         # Save to In-Memory Cache
         if settings.llm_cost_enable_cache:
@@ -122,7 +103,7 @@ def parse_request_with_llm(user_message: str) -> Dict[str, Any]:
         return parsed_result
     except Exception as e:
         logger.warning(
-            f"[AIパース例外・タイムアウト] Google GenAI SDK の呼び出しに失敗しました (指定モデル: '{model_name}', エラー詳細: {e})。ヒューリスティックパーサーへフォールバックします。",
+            f"[AIパース例外・タイムアウト] Google GenAI SDK の呼び出しに失敗しました (設定モデル: '{model_name}', エラー詳細: {e})。ヒューリスティックパーサーへフォールバックします。",
             exc_info=True
         )
         return _heuristic_fallback_parser(cleaned_message)

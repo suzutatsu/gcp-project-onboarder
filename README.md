@@ -110,7 +110,7 @@ export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service-account-key.json"
 
 | パラメータ名 | デフォルト値 / 設定例 | 説明 |
 | :--- | :--- | :--- |
-| **`GCP_LOCATION`** | `us-central1` | Google Cloud のリージョン。Gemini 3.5 モデル利用のため `us-central1` 推奨。 |
+| **`GCP_LOCATION`** | `us` | Google Cloud のリージョン。US マルチリージョン (`us`) 推奨。 |
 | **`GEMINI_MODEL_NAME`** | `gemini-3.5-flash-lite` | 自然言語解析に使用する Gemini のモデル名。 |
 | **`DEFAULT_GROUP_EMAIL`** | 空 (例: `group-dev@example.com`) | メッセージ内でグループメールアドレスが省略された場合に使用されるデフォルトのグループアドレス。 |
 | **`ALLOWED_EMAIL_DOMAINS`** | 空 (例: `example.com`) | 申請を許可するユーザーのメールアドレスドメインのカンマ区切りリスト。空の場合はドメイン制限なし。 |
