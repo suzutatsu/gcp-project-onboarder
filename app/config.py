@@ -39,9 +39,9 @@ class Settings(BaseSettings):
         description="Google Cloud Project ID (auto-detected via GCP metadata if blank)"
     )
     gcp_location: str = Field(
-        default="asia-northeast1",
+        default="us-central1",
         alias="GCP_LOCATION",
-        description="Google Cloud location region"
+        description="Google Cloud location region (default us-central1 for full Gemini 3.5 model availability)"
     )
     gemini_model_name: str = Field(
         default="gemini-3.5-flash-lite",

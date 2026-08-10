@@ -25,58 +25,83 @@ Extraction Rules:
 Return ONLY a valid raw JSON object. Do not include markdown code block formatting or explanation.
 """
 
-# In-Memory Cache for LLM responses: hash(cleaned_message) -> (timestamp, parsed_dict)
+# In-Memory Cache for LLM responses: hash(model:cleaned_message) -> (timestamp, parsed_dict)
 _PARSING_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 
 
 def parse_request_with_llm(user_message: str) -> Dict[str, Any]:
     """
-    Parses a user message using ultra-fast & low-cost Gemini Flash Lite:
-    1. In-Memory Cache Check -> Returns cached result if recently parsed
-    2. Gemini Flash Lite SDK Call -> Ultra-low cost (< $0.0001/req) & ultra-fast (< 300ms) with 3s hard timeout cap
+    Parses a user message using Gemini Flash (Vertex AI):
+    1. In-Memory Cache Check -> Returns cached result if model + message key exists
+    2. Gemini SDK Call -> Uses settings.gemini_model_name and handles region fallback if unavailable in asia-northeast1
 
     :param user_message: Natural language request message from Teams user
     :return: Dictionary containing parsed action, group_email, member_email
     """
     cleaned_message = _clean_teams_mention(user_message)
-    logger.info(f"[AIパース開始] Gemini Flash Lite で申請メッセージを解析中: '{cleaned_message}'")
+    model_name = settings.gemini_model_name
+    logger.info(f"[AIパース開始] Gemini ({model_name}, リージョン: {settings.gcp_location}) で解析中: '{cleaned_message}'")
 
-    msg_hash = hashlib.md5(cleaned_message.encode("utf-8")).hexdigest()
+    # Key includes model_name so changing GEMINI_MODEL_NAME invalidates old cached parsing results
+    cache_key = f"{model_name}:{cleaned_message}"
+    msg_hash = hashlib.md5(cache_key.encode("utf-8")).hexdigest()
 
     # Cost-Optimization: Check In-Memory Parsing Cache
     if settings.llm_cost_enable_cache and msg_hash in _PARSING_CACHE:
         cache_time, cached_result = _PARSING_CACHE[msg_hash]
         if time.time() - cache_time < settings.llm_cost_cache_ttl_seconds:
-            logger.info("[メモリキャッシュヒット] 過去の解析結果をキャッシュから即時取得しました (課金トークン数: 0)。")
+            logger.info(f"[メモリキャッシュヒット] モデル '{model_name}' の過去の解析結果をキャッシュから即時取得しました (課金: 0)。")
             return cached_result.copy()
 
-    # Call Google GenAI SDK (gemini-flash-lite via Vertex AI)
+    # Call Google GenAI SDK (Vertex AI)
     try:
         from google import genai
         from google.genai import types
 
         project_id = settings.gcp_project_id.strip() if settings.gcp_project_id and settings.gcp_project_id.strip() else None
         
-        # Configure client with vertexai=True and strict 3.0 second (3000 ms) timeout cap
+        # Primary regional client configuration (e.g. asia-northeast1)
         client = genai.Client(
             vertexai=True,
             project=project_id,
             location=settings.gcp_location,
-            http_options=types.HttpOptions(
-                timeout=3000  # Hard cap at 3.0 seconds to prevent 5-minute hang/retry
-            )
+            http_options=types.HttpOptions(timeout=3000)
         )
 
-        response = client.models.generate_content(
-            model=settings.gemini_model_name,
-            contents=cleaned_message,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
-                response_mime_type="application/json",
-                temperature=0.0,
-                max_output_tokens=settings.llm_cost_max_output_tokens  # Cost control cap
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=cleaned_message,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    response_mime_type="application/json",
+                    temperature=0.0,
+                    max_output_tokens=settings.llm_cost_max_output_tokens
+                )
             )
-        )
+        except Exception as err:
+            err_str = str(err).lower()
+            # If specified model is unavailable in target region (e.g. 404 NOT_FOUND in asia-northeast1), attempt us-central1 fallback
+            if "404" in err_str or "not found" in err_str:
+                logger.warning(f"[リージョンモデル未対応] モデル '{model_name}' はリージョン '{settings.gcp_location}' で未提供です。us-central1 または GAモデルへフォールバックします ({err})...")
+                fallback_client = genai.Client(
+                    vertexai=True,
+                    project=project_id,
+                    location="us-central1",
+                    http_options=types.HttpOptions(timeout=3000)
+                )
+                response = fallback_client.models.generate_content(
+                    model=model_name,
+                    contents=cleaned_message,
+                    config=types.GenerateContentConfig(
+                        system_instruction=SYSTEM_PROMPT,
+                        response_mime_type="application/json",
+                        temperature=0.0,
+                        max_output_tokens=settings.llm_cost_max_output_tokens
+                    )
+                )
+            else:
+                raise err
 
         response_text = response.text.strip() if response.text else "{}"
         if response_text.startswith("```"):
@@ -93,12 +118,12 @@ def parse_request_with_llm(user_message: str) -> Dict[str, Any]:
         if settings.llm_cost_enable_cache:
             _PARSING_CACHE[msg_hash] = (time.time(), parsed_result)
 
-        logger.info(f"[AIパース成功] Google GenAI Vertex AI ({settings.gemini_model_name}) による解析が完了しました: {parsed_result}")
+        logger.info(f"[AIパース成功] Google GenAI Vertex AI ({model_name}) による解析が完了しました: {parsed_result}")
         return parsed_result
     except Exception as e:
         logger.warning(
-            f"[AIパース例外・タイムアウト] Google GenAI SDK の呼び出しに失敗しました (エラー詳細: {e})。ヒューリスティックパーサーへフォールバックします。",
-            exc_info=True  # Logs complete Python stack trace to Cloud Logging
+            f"[AIパース例外・タイムアウト] Google GenAI SDK の呼び出しに失敗しました (指定モデル: '{model_name}', エラー詳細: {e})。ヒューリスティックパーサーへフォールバックします。",
+            exc_info=True
         )
         return _heuristic_fallback_parser(cleaned_message)
 
