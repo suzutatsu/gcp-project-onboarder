@@ -37,6 +37,16 @@ def test_default_group_email_fallback():
         settings.default_group_email = original_default
 
 
+def test_default_group_email_parameter_argument():
+    text = "@GCP Onboarder 山田さん (yamada@company.com) を追加して"
+    parsed = parse_request_with_llm(text, default_group_email="arg-default-group@company.com")
+
+    assert parsed is not None
+    assert parsed["action"] == "add_member"
+    assert parsed["group_email"] == "arg-default-group@company.com"
+    assert parsed["member_email"] == "yamada@company.com"
+
+
 def test_missing_email_parsing():
     text = "@GCP Onboarder 開発チーム (group-dev@company.com) に 山田さんを追加して"
     parsed = parse_request_with_llm(text)

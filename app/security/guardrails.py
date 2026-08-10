@@ -19,16 +19,19 @@ class GuardrailValidationError(ValueError):
 
 def validate_request_guardrails(
     request: Dict[str, Any],
-    allowed_domains: Optional[List[str]] = None
+    allowed_domains: Optional[List[str]] = None,
+    default_group_email: Optional[str] = None
 ) -> None:
     """
     Strictly validates all request parameters against Python security guardrails.
 
     :param request: Parsed request dictionary containing action, group_email, member_email
     :param allowed_domains: Optional list of whitelisted email domains (defaults to settings.allowed_domains)
+    :param default_group_email: Optional default target Google Group email (defaults to settings.default_group_email)
     :raises GuardrailValidationError: If any safety check fails
     """
     domains_whitelist = allowed_domains if allowed_domains is not None else settings.allowed_domains
+    effective_default_group = default_group_email if default_group_email is not None else settings.default_group_email
 
     action = request.get("action")
     if not action or action not in ALLOWED_ACTIONS:
@@ -36,14 +39,14 @@ def validate_request_guardrails(
             f"許可されていないアクションです: '{action}'. (許可アクション: {', '.join(sorted(ALLOWED_ACTIONS))})"
         )
 
-    # 1. Validate Group Email Format (Sanitize non-email strings / nulls & apply DEFAULT_GROUP_EMAIL fallback)
+    # 1. Validate Group Email Format (Sanitize non-email strings / nulls & apply default_group_email fallback)
     group_email = request.get("group_email")
     is_valid_group_email = bool(group_email and EMAIL_REGEX.match(str(group_email)))
 
     if not is_valid_group_email:
-        if settings.default_group_email:
-            logger.info(f"[ガードレール補正] グループ未指定・非メール形式 ('{group_email}') のため、デフォルトグループ '{settings.default_group_email}' を適用しました。")
-            group_email = settings.default_group_email
+        if effective_default_group:
+            logger.info(f"[ガードレール補正] グループ未指定・非メール形式 ('{group_email}') のため、デフォルトグループ '{effective_default_group}' を適用しました。")
+            group_email = effective_default_group
             request["group_email"] = group_email
         else:
             if not group_email or str(group_email).strip().lower() in ["null", "none", "undefined", ""]:

@@ -3,7 +3,7 @@ import json
 import re
 import time
 import logging
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, Optional
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -19,8 +19,9 @@ Analyze the user's natural language request and extract the target parameters in
 Extraction Rules:
 1. If the request mentions adding a user to a group -> action is "add_member".
 2. If the request mentions removing a user from a group -> action is "remove_member".
-3. If only a user email address is mentioned and no group email is specified, set group_email to null (the system will automatically use the default group if configured).
-4. If an email address is missing in the message, set member_email to null. Do NOT invent or guess email addresses.
+3. If only ONE email address is present in the message, extract that email address as member_email (the target user), and set group_email to null.
+4. If two email addresses are present in the message, identify which is group_email and which is member_email.
+5. If an email address is missing in the message, set member_email to null. Do NOT invent or guess email addresses.
 
 Return ONLY a valid raw JSON object. Do not include markdown code block formatting or explanation.
 """
@@ -29,22 +30,28 @@ Return ONLY a valid raw JSON object. Do not include markdown code block formatti
 _PARSING_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 
 
-def parse_request_with_llm(user_message: str) -> Dict[str, Any]:
+def parse_request_with_llm(
+    user_message: str,
+    default_group_email: Optional[str] = None
+) -> Dict[str, Any]:
     """
     Parses a user message using Gemini Flash (Vertex AI):
     1. In-Memory Cache Check -> Returns cached result if model + message key exists
     2. Gemini SDK Call -> Executes Vertex AI API directly with settings.gemini_model_name and 3s timeout
+    3. Default Group Fallback -> Applies default_group_email (argument or settings.default_group_email) when group is omitted
 
     :param user_message: Natural language request message from Teams user
+    :param default_group_email: Optional default target Google Group email (overrides settings.default_group_email)
     :return: Dictionary containing parsed action, group_email, member_email
     """
     cleaned_message = _clean_teams_mention(user_message)
     model_name = settings.gemini_model_name
+    effective_default_group = default_group_email if default_group_email is not None else settings.default_group_email
     
-    logger.info(f"[AIパース開始] Gemini (モデルID: '{model_name}', リージョン: {settings.gcp_location}) で解析中: '{cleaned_message}'")
+    logger.info(f"[AIパース開始] Gemini (モデルID: '{model_name}', リージョン: {settings.gcp_location}, デフォルトグループ: '{effective_default_group}') で解析中: '{cleaned_message}'")
 
-    # Key includes model_name so changing GEMINI_MODEL_NAME invalidates old cached parsing results
-    cache_key = f"{model_name}:{cleaned_message}"
+    # Key includes model_name and effective_default_group so changing defaults invalidates cached results
+    cache_key = f"{model_name}:{effective_default_group}:{cleaned_message}"
     msg_hash = hashlib.md5(cache_key.encode("utf-8")).hexdigest()
 
     # Cost-Optimization: Check In-Memory Parsing Cache
@@ -86,15 +93,24 @@ def parse_request_with_llm(user_message: str) -> Dict[str, Any]:
 
         parsed_result = json.loads(response_text)
 
-        # Sanitize null/none or non-email string values from LLM JSON and apply DEFAULT_GROUP_EMAIL fallback if omitted
-        raw_group = parsed_result.get("group_email")
-        is_valid_group = bool(raw_group and re.match(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", str(raw_group)))
-        if not is_valid_group:
-            parsed_result["group_email"] = settings.default_group_email if settings.default_group_email else None
+        # Extract all email addresses from message to handle single-email scenario with 100% precision
+        message_emails = re.findall(r"[\w\.-]+@[\w\.-]+\.\w+", cleaned_message)
 
-        raw_member = parsed_result.get("member_email")
-        if raw_member and str(raw_member).strip().lower() in ["null", "none", "undefined", ""]:
-            parsed_result["member_email"] = None
+        if len(message_emails) == 1 and effective_default_group:
+            single_email = message_emails[0]
+            parsed_result["member_email"] = single_email
+            parsed_result["group_email"] = effective_default_group
+            logger.info(f"[AIパース単一メール補正] 文面内メール '{single_email}' を対象メンバーとし、グループを '{effective_default_group}' に補填しました。")
+        else:
+            # Sanitize null/none or non-email string values from LLM JSON and apply default_group_email fallback
+            raw_group = parsed_result.get("group_email")
+            is_valid_group = bool(raw_group and re.match(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", str(raw_group)))
+            if not is_valid_group:
+                parsed_result["group_email"] = effective_default_group if effective_default_group else None
+
+            raw_member = parsed_result.get("member_email")
+            if raw_member and str(raw_member).strip().lower() in ["null", "none", "undefined", ""]:
+                parsed_result["member_email"] = None
 
         # Save to In-Memory Cache
         if settings.llm_cost_enable_cache:
@@ -107,7 +123,7 @@ def parse_request_with_llm(user_message: str) -> Dict[str, Any]:
             f"[AIパース例外・タイムアウト] Google GenAI SDK の呼び出しに失敗しました (設定モデル: '{model_name}', エラー詳細: {e})。ヒューリスティックパーサーへフォールバックします。",
             exc_info=True
         )
-        return _heuristic_fallback_parser(cleaned_message)
+        return _heuristic_fallback_parser(cleaned_message, default_group_email=effective_default_group)
 
 
 def _clean_teams_mention(text: str) -> str:
@@ -117,10 +133,14 @@ def _clean_teams_mention(text: str) -> str:
     return text.strip()
 
 
-def _heuristic_fallback_parser(text: str) -> Dict[str, Any]:
+def _heuristic_fallback_parser(
+    text: str,
+    default_group_email: Optional[str] = None
+) -> Dict[str, Any]:
     """
     Robust regex fallback parser when Gemini API is offline or in dev environment.
     """
+    effective_default_group = default_group_email if default_group_email is not None else settings.default_group_email
     emails = re.findall(r"[\w\.-]+@[\w\.-]+\.\w+", text)
 
     action = "add_member"
@@ -139,15 +159,15 @@ def _heuristic_fallback_parser(text: str) -> Dict[str, Any]:
             group_email = emails[0]
             member_email = emails[1]
     elif len(emails) == 1:
-        # If DEFAULT_GROUP_EMAIL is configured, assume single email in request is the target member
-        if settings.default_group_email:
+        # If default group is configured or passed, assume single email in request is the target member
+        if effective_default_group:
             member_email = emails[0]
-            group_email = settings.default_group_email
+            group_email = effective_default_group
         else:
             group_email = emails[0]
 
-    if not group_email and settings.default_group_email:
-        group_email = settings.default_group_email
+    if not group_email and effective_default_group:
+        group_email = effective_default_group
 
     result = {
         "action": action,
