@@ -44,9 +44,9 @@ class Settings(BaseSettings):
         description="Google Cloud location region"
     )
     gemini_model_name: str = Field(
-        default="gemini-flash-lite",
+        default="gemini-3.5-flash-lite",
         alias="GEMINI_MODEL_NAME",
-        description="Ultra-fast & ultra-low cost Gemini model (default gemini-flash-lite)"
+        description="Ultra-fast & ultra-low cost Gemini model (default gemini-3.5-flash-lite)"
     )
 
     # LLM Cost Optimization Configuration
