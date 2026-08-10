@@ -41,7 +41,7 @@ def test_webhook_deduplication():
     # Immediate duplicate request from Teams -> Filtered out (returns empty text response, no double message)
     res2 = client.post("/webhook", json=payload)
     assert res2.status_code == 200
-    assert res2.json()["text"] == ""
+    assert res2.text == ""
 
 
 def test_invalid_hmac_production():

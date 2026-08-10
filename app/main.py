@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from typing import Dict, Any
-from fastapi import FastAPI, Request, HTTPException, BackgroundTasks, status
+from fastapi import FastAPI, Request, Response, HTTPException, BackgroundTasks, status
 from app.config import settings
 from app.security.hmac_verifier import verify_teams_signature
 from app.security.guardrails import validate_request_guardrails, GuardrailValidationError
@@ -75,8 +75,8 @@ async def handle_teams_webhook(request: Request, background_tasks: BackgroundTas
     if dedup_key in _PROCESSED_WEBHOOK_CACHE:
         last_time = _PROCESSED_WEBHOOK_CACHE[dedup_key]
         if now - last_time < DEDUPLICATION_TTL_SECONDS:
-            logger.info(f"[重複Webhook検知] 申請者 '{requester}' からの直前同文面リクエストの重複送信を検知しました。重複処理と2重返信をスキップします。")
-            return {"type": "message", "text": ""}
+            logger.info(f"[重複Webhook検知] 申請者 '{requester}' からの直前同文面リクエストの重複送信を検知しました。サイレント 200 OK 応答を返却します。")
+            return Response(status_code=status.HTTP_200_OK)
 
     _PROCESSED_WEBHOOK_CACHE[dedup_key] = now
 
