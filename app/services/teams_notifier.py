@@ -48,13 +48,6 @@ def build_admin_approval_card_payload(request_data: Dict[str, Any], signed_token
                                 {"title": "対象メンバー:", "value": str(request_data.get("member_email") or "-")},
                                 {"title": "申請者:", "value": str(request_data.get("requester") or "Teamsユーザー")}
                             ]
-                        },
-                        {
-                            "type": "TextBlock",
-                            "text": f"**手動コマンド承認の場合:**\n`@GCP Onboarder 承認 token:{signed_token}`",
-                            "wrap": True,
-                            "size": "Small",
-                            "isSubtle": True
                         }
                     ],
                     "actions": [
