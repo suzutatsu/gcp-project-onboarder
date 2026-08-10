@@ -13,13 +13,14 @@ You are an expert AI security parser for Google Workspace Group member managemen
 Analyze the user's natural language request and extract the target parameters into a JSON object with the following fields:
 
 - action: "add_member" | "remove_member"
-- group_email: Target Google Group email address (e.g. "group-dev@company.com"). If not mentioned, set to null.
+- group_email: Target Google Group email address (e.g. "group-dev@company.com"). If not mentioned or omitted in the message, set to null.
 - member_email: Target user email address (e.g. "yamada@company.com"). If no user email address is specified, set to null.
 
 Extraction Rules:
 1. If the request mentions adding a user to a group -> action is "add_member".
 2. If the request mentions removing a user from a group -> action is "remove_member".
-3. If an email address is missing in the message, set member_email to null. Do NOT invent or guess email addresses.
+3. If only a user email address is mentioned and no group email is specified, set group_email to null (the system will automatically use the default group if configured).
+4. If an email address is missing in the message, set member_email to null. Do NOT invent or guess email addresses.
 
 Return ONLY a valid raw JSON object. Do not include markdown code block formatting or explanation.
 """
@@ -54,7 +55,7 @@ def parse_request_with_llm(user_message: str) -> Dict[str, Any]:
         from google import genai
         from google.genai import types
 
-        project_id = settings.gcp_project_id if settings.gcp_project_id else None
+        project_id = settings.gcp_project_id.strip() if settings.gcp_project_id and settings.gcp_project_id.strip() else None
         
         # Configure client with vertexai=True and strict 3.0 second (3000 ms) timeout cap
         client = genai.Client(
@@ -131,7 +132,8 @@ def _heuristic_fallback_parser(text: str) -> Dict[str, Any]:
             group_email = emails[0]
             member_email = emails[1]
     elif len(emails) == 1:
-        if settings.default_group_email and not any(k in emails[0] for k in ["group", "team", "ml", "dev", "pj"]):
+        # If DEFAULT_GROUP_EMAIL is configured, assume single email in request is the target member
+        if settings.default_group_email:
             member_email = emails[0]
             group_email = settings.default_group_email
         else:

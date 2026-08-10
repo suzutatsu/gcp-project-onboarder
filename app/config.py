@@ -34,9 +34,9 @@ class Settings(BaseSettings):
 
     # GCP Configuration
     gcp_project_id: str = Field(
-        default="my-gcp-project",
+        default="",
         alias="GCP_PROJECT_ID",
-        description="Google Cloud Project ID"
+        description="Google Cloud Project ID (auto-detected via GCP metadata if blank)"
     )
     gcp_location: str = Field(
         default="asia-northeast1",

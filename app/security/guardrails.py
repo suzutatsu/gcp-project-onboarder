@@ -36,8 +36,13 @@ def validate_request_guardrails(
             f"許可されていないアクションです: '{action}'. (許可アクション: {', '.join(sorted(ALLOWED_ACTIONS))})"
         )
 
-    # 1. Validate Group Email Format
+    # 1. Validate Group Email Format (Apply DEFAULT_GROUP_EMAIL fallback if unassigned)
     group_email = request.get("group_email")
+    if not group_email and settings.default_group_email:
+        group_email = settings.default_group_email
+        request["group_email"] = group_email
+        logger.info(f"[ガードレール補正] グループ未指定のためデフォルトグループ '{group_email}' を適用しました。")
+
     if not group_email:
         raise GuardrailValidationError("対象のGoogleグループが判別できませんでした。グループメールアドレス（例: group-dev@company.com）を明記して再度ご依頼ください。")
     if not EMAIL_REGEX.match(group_email):
