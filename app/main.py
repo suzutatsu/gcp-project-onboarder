@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from typing import Dict, Any
 from fastapi import FastAPI, Request, Response, HTTPException, BackgroundTasks, status
 from app.config import settings
@@ -9,6 +10,7 @@ from app.security.token_service import token_service
 from app.services.llm_parser import parse_request_with_llm
 from app.services.workspace_service import workspace_group_service
 from app.services.teams_notifier import (
+    build_admin_approval_card_payload,
     send_admin_approval_card_async,
     send_teams_text_message_async
 )
@@ -20,19 +22,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger("add-member-bot")
 
+# In-Memory Webhook Deduplication Cache: (requester:text) -> timestamp
+_PROCESSED_WEBHOOK_CACHE: Dict[str, float] = {}
+DEDUPLICATION_TTL_SECONDS = 15.0
+
 # FastAPI App initialization
 app = FastAPI(
     title="GCP Project Onboarder",
     description="Stateless/DB-less Teams bot for managing Google Workspace Groups with human-in-the-loop approval.",
     version="1.0.0"
 )
-
-
-import time
-
-# In-Memory Webhook Deduplication Cache: (requester:text) -> timestamp
-_PROCESSED_WEBHOOK_CACHE: Dict[str, float] = {}
-DEDUPLICATION_TTL_SECONDS = 15.0
 
 
 @app.get("/health")
@@ -46,8 +45,7 @@ def health_check():
 async def handle_teams_webhook(request: Request, background_tasks: BackgroundTasks):
     """
     Microsoft Teams Outgoing Webhook receiver (< 5s SLA).
-    Verifies HMAC-SHA256 signature, responds instantly (< 50ms), and delegates LLM parsing
-    and approval card dispatch to FastAPI BackgroundTasks.
+    Handles single-channel (direct Adaptive Card response) and multi-channel (admin channel dispatch) modes cleanly.
     """
     body_bytes = await request.body()
     auth_header = request.headers.get("Authorization", "")
@@ -75,8 +73,8 @@ async def handle_teams_webhook(request: Request, background_tasks: BackgroundTas
     if dedup_key in _PROCESSED_WEBHOOK_CACHE:
         last_time = _PROCESSED_WEBHOOK_CACHE[dedup_key]
         if now - last_time < DEDUPLICATION_TTL_SECONDS:
-            logger.info(f"[重複Webhook検知] 申請者 '{requester}' からの直前同文面リクエストの重複送信を検知しました。サイレント 200 OK 応答を返却します。")
-            return Response(status_code=status.HTTP_200_OK)
+            logger.info(f"[重複Webhook検知] 申請者 '{requester}' からの直前同文面リクエストの重複送信を検知しました。不可視レスポンス (Zero-Width Space) を返却します。")
+            return {"type": "message", "text": "\u200b"}
 
     _PROCESSED_WEBHOOK_CACHE[dedup_key] = now
 
@@ -85,15 +83,38 @@ async def handle_teams_webhook(request: Request, background_tasks: BackgroundTas
         "requester": requester
     }
 
-    # 3. Enqueue background task for LLM parsing & Admin card posting
-    background_tasks.add_task(process_iam_request_async, payload)
-    logger.info("[即時応答] バックグラウンドタスクをキューに登録。Teams へ即時 200 OK 応答を返却します (<50ms)。")
-
-    # 4. Respond immediately to Teams (< 50ms response to guarantee < 5s SLA)
-    return {
-        "type": "message",
-        "text": "✅ **申請受付完了**\nご依頼を受理しました。AIがメッセージ内容を解析し、管理者の承認手続きへ進行します。"
-    }
+    # 3. Hybrid Response Logic: Single Channel vs Separate Admin Channel Mode
+    if not settings.admin_webhook_url:
+        # SINGLE CHANNEL / DEV MODE: Return Adaptive Card or prompt message directly in HTTP response (EXACTLY 1 POST)
+        logger.info("[単一チャネルモード] ADMIN_WEBHOOK_URL 未設定のため、即時レスポンスとして直接 Adaptive Card または案内文面を返却します。")
+        try:
+            parsed_request = await asyncio.to_thread(parse_request_with_llm, user_text)
+            parsed_request["requester"] = requester
+            validate_request_guardrails(parsed_request)
+            signed_token = token_service.create_approval_token(parsed_request)
+            
+            logger.info("[単一チャネルモード完了] 承認ボタン付き Adaptive Card を直接レスポンスとして 1 投稿のみ返却します。")
+            return build_admin_approval_card_payload(parsed_request, signed_token)
+        except GuardrailValidationError as e:
+            logger.warning(f"[ガードレール判定案内] {e}")
+            return {
+                "type": "message",
+                "text": f"ℹ️ **申請案内:** {e}"
+            }
+        except Exception as e:
+            logger.error(f"[パース例外] リクエスト処理中にエラーが発生しました: {e}", exc_info=True)
+            return {
+                "type": "message",
+                "text": f"❌ **システムエラー:** リクエストの処理中にエラーが発生しました: {e}"
+            }
+    else:
+        # SEPARATE ADMIN CHANNEL MODE: Delegate card posting to background task and return instant receipt
+        logger.info("[複数チャネルモード] ADMIN_WEBHOOK_URL 設定あり。バックグラウンドタスクへ管理者チャネル送信を委任します。")
+        background_tasks.add_task(process_iam_request_async, payload)
+        return {
+            "type": "message",
+            "text": "✅ **申請受付完了**\nご依頼を受理しました。管理者専用チャネルへ承認リクエストを送信しました。"
+        }
 
 
 @app.post("/approve")
@@ -124,7 +145,7 @@ async def handle_direct_approve(request: Request):
 
 async def process_iam_request_async(payload: Dict[str, Any]):
     """
-    Background worker pipeline:
+    Background worker pipeline (used when ADMIN_WEBHOOK_URL is configured):
     1. Parse request with Gemini Flash Lite LLM
     2. Validate against Python safety guardrails
     3. Generate DB-less HMAC signed payload token
@@ -143,7 +164,7 @@ async def process_iam_request_async(payload: Dict[str, Any]):
         logger.info(f"[ステップ 1/4 完了] 解析結果: アクション='{parsed_request.get('action')}', 対象グループ='{parsed_request.get('group_email')}', 対象メンバー='{parsed_request.get('member_email')}'")
 
         # Step 2: Guardrail Validation
-        logger.info("[ステップ 2/4: ガードレール] セキュリティ検証を実行中 (アタッチメント、メール形式、ドメイン制限)...")
+        logger.info("[ステップ 2/4: ガードレール] セキュリティ検証を実行中...")
         validate_request_guardrails(parsed_request)
         logger.info("[ステップ 2/4 完了] セキュリティガードレール検証に合格しました。")
 
@@ -166,7 +187,6 @@ async def process_iam_request_async(payload: Dict[str, Any]):
             logger.warning("[送信警告] 管理者チャネルへの承認カード投稿に失敗しました。")
 
     except GuardrailValidationError as e:
-        # User-facing prompt or security rejection notice
         error_msg = f"ℹ️ **申請案内 / セキュリティ判定:** {e}"
         logger.warning(f"[ガードレール判定結果] {e}")
         await send_teams_text_message_async(settings.notification_webhook_url or settings.admin_webhook_url, error_msg)
@@ -183,7 +203,6 @@ async def execute_approval_action(token: str, approver: str = "Administrator") -
     and admin logs go to `ADMIN_WEBHOOK_URL`.
     """
     logger.info("[実行ステップ 1/4: トークン検証] HMAC 署名および有効期限 (3日間) を検証中...")
-    # 1. Verify token signature and expiration
     request_data = token_service.verify_signed_token(token)
     if not request_data:
         logger.warning("[承認実行失敗] 無効または有効期限切れの承認トークンです。")
@@ -232,9 +251,10 @@ async def execute_approval_action(token: str, approver: str = "Administrator") -
         completion_text = f"🎉 **申請の処理が完了しました**\n\n{success_message}\n(承認者: {approver})"
         await send_teams_text_message_async(settings.notification_webhook_url or settings.admin_webhook_url, completion_text)
         
-        # Log to Admin Channel as well
-        admin_log_text = f"ℹ️ **承認完了ログ** (ID: {req_id})\n{success_message} (承認者: {approver})"
-        await send_teams_text_message_async(settings.admin_webhook_url, admin_log_text)
+        # Log to Admin Channel as well if configured
+        if settings.admin_webhook_url:
+            admin_log_text = f"ℹ️ **承認完了ログ** (ID: {req_id})\n{success_message} (承認者: {approver})"
+            await send_teams_text_message_async(settings.admin_webhook_url, admin_log_text)
 
         logger.info(f"[承認ワークフロー完了] 申請ID '{req_id}' の一連の処理が正常に完結しました。")
 
@@ -247,8 +267,8 @@ async def execute_approval_action(token: str, approver: str = "Administrator") -
     except Exception as e:
         error_msg = f"❌ **権限実行エラー (ID: {req_id}):** {e}"
         logger.error(f"[API実行エラー] Google Workspace 操作の実行に失敗しました: {e}", exc_info=True)
-        # Errors go to Admin Channel
-        await send_teams_text_message_async(settings.admin_webhook_url, error_msg, title="⚠️ Google Workspace 処理エラー")
+        if settings.admin_webhook_url:
+            await send_teams_text_message_async(settings.admin_webhook_url, error_msg, title="⚠️ Google Workspace 処理エラー")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"権限実行エラー: {str(e)}"

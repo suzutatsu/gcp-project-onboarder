@@ -5,19 +5,10 @@ from typing import Dict, Any, Optional
 logger = logging.getLogger(__name__)
 
 
-async def send_admin_approval_card_async(webhook_url: str, request_data: Dict[str, Any], signed_token: str) -> bool:
+def build_admin_approval_card_payload(request_data: Dict[str, Any], signed_token: str) -> Dict[str, Any]:
     """
-    Asynchronously sends an Adaptive Card to Teams Admin Channel for approval.
-
-    :param webhook_url: Teams Incoming Webhook URL for admin channel
-    :param request_data: Parsed request data dict
-    :param signed_token: DB-less HMAC signed payload token
-    :return: True if successfully sent, False otherwise
+    Constructs the Teams Adaptive Card payload JSON structure for human approval.
     """
-    if not webhook_url:
-        logger.warning("No ADMIN_WEBHOOK_URL specified. Skipping notification.")
-        return False
-
     action_label = {
         "add_member": "➕ グループメンバー追加",
         "remove_member": "➖ グループメンバー削除"
@@ -25,7 +16,7 @@ async def send_admin_approval_card_async(webhook_url: str, request_data: Dict[st
 
     req_id = request_data.get("req_id", "REQ-NEW")
 
-    card_payload = {
+    return {
         "type": "message",
         "attachments": [
             {
@@ -81,14 +72,30 @@ async def send_admin_approval_card_async(webhook_url: str, request_data: Dict[st
         ]
     }
 
+
+async def send_admin_approval_card_async(webhook_url: str, request_data: Dict[str, Any], signed_token: str) -> bool:
+    """
+    Asynchronously sends an Adaptive Card to Teams Admin Channel for approval.
+
+    :param webhook_url: Teams Incoming Webhook URL for admin channel
+    :param request_data: Parsed request data dict
+    :param signed_token: DB-less HMAC signed payload token
+    :return: True if successfully sent, False otherwise
+    """
+    if not webhook_url:
+        logger.warning("[通知警告] ADMIN_WEBHOOK_URL が設定されていないため、管理者チャネルへのカード送信をスキップします。")
+        return False
+
+    card_payload = build_admin_approval_card_payload(request_data, signed_token)
+
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(webhook_url, json=card_payload)
             response.raise_for_status()
-            logger.info(f"Successfully posted Adaptive Card to admin webhook ({response.status_code}).")
+            logger.info(f"[カード送信成功] 管理者 Webhook へ承認 Adaptive Card を送信しました ({response.status_code})。")
             return True
     except Exception as e:
-        logger.error(f"Failed to post Adaptive Card to admin webhook: {e}", exc_info=True)
+        logger.error(f"[カード送信エラー] 管理者 Webhook へのカード送信に失敗しました: {e}", exc_info=True)
         return False
 
 
@@ -97,7 +104,7 @@ async def send_teams_text_message_async(webhook_url: str, message: str, title: O
     Asynchronously sends a notification message to a Teams Webhook.
     """
     if not webhook_url:
-        logger.warning("No webhook URL configured for notification.")
+        logger.warning("[通知警告] Webhook URL が設定されていないため、テキスト通知送信をスキップします。")
         return False
 
     payload = {"text": f"**{title}**\n\n{message}" if title else message}
@@ -106,8 +113,8 @@ async def send_teams_text_message_async(webhook_url: str, message: str, title: O
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(webhook_url, json=payload)
             response.raise_for_status()
-            logger.info("Successfully sent Teams text message.")
+            logger.info("[テキスト送信成功] Teams へテキストメッセージを正常に送信しました。")
             return True
     except Exception as e:
-        logger.error(f"Failed to send Teams text message: {e}", exc_info=True)
+        logger.error(f"[テキスト送信エラー] Teams テキストメッセージの送信に失敗しました: {e}", exc_info=True)
         return False
