@@ -23,7 +23,7 @@ logger = logging.getLogger("add-member-bot")
 # FastAPI App initialization
 app = FastAPI(
     title="GCP Project Onboarder",
-    description="Stateless/DB-less Teams bot for managing Google Workspace Groups and Google Cloud IAM roles with human-in-the-loop approval.",
+    description="Stateless/DB-less Teams bot for managing Google Workspace Groups with human-in-the-loop approval.",
     version="1.0.0"
 )
 
@@ -31,6 +31,7 @@ app = FastAPI(
 @app.get("/health")
 def health_check():
     """Health check endpoint for Cloud Run container probes."""
+    logger.info("[ヘルスチェック] リクエストを受信しました。サービスは正常に動作しています。")
     return {"status": "ok", "env": settings.env, "version": "1.0.0"}
 
 
@@ -46,16 +47,20 @@ async def handle_teams_webhook(request: Request, background_tasks: BackgroundTas
 
     # 1. HMAC Signature Verification
     if settings.teams_security_token:
+        logger.info("[HMAC検証] 受信した Teams 署名の検証を開始します。")
         if not verify_teams_signature(body_bytes, auth_header, settings.teams_security_token):
-            logger.warning("🚨 Invalid Teams HMAC signature. Access denied.")
+            logger.warning("[HMAC検証失敗] Teams HMAC 署名が無効です。アクセスを拒否しました (401)。")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid Teams HMAC Signature"
             )
+        logger.info("[HMAC検証成功] 署名が正常に確認されました。")
 
     body_json = await request.json()
     user_text = body_json.get("text", "")
     requester = body_json.get("from", {}).get("name", "Teams User")
+
+    logger.info(f"[WEBHOOK受信] 申請者 '{requester}' からメッセージを受信: '{user_text}'")
 
     payload = {
         "text": user_text,
@@ -64,6 +69,7 @@ async def handle_teams_webhook(request: Request, background_tasks: BackgroundTas
 
     # 2. Enqueue background task for LLM parsing & Admin card posting
     background_tasks.add_task(process_iam_request_async, payload)
+    logger.info("[即時応答] バックグラウンドタスクをキューに登録。Teams へ即時 200 OK 応答を返却します (<50ms)。")
 
     # 3. Respond immediately to Teams (< 50ms response to guarantee < 5s SLA)
     return {
@@ -76,14 +82,17 @@ async def handle_teams_webhook(request: Request, background_tasks: BackgroundTas
 async def handle_direct_approve(request: Request):
     """
     Endpoint called by Teams Adaptive Card submit action or approval button.
-    Receives signed token, verifies HMAC signature, and executes Google Cloud/Workspace API calls.
+    Receives signed token, verifies HMAC signature, and executes Google Workspace API calls.
     """
     try:
         body = await request.json()
         token = body.get("token")
         approver = body.get("approver", "Teams Administrator")
 
+        logger.info(f"[承認エンドポイント] 承認者 '{approver}' から承認処理リクエストを受信しました。")
+
         if not token:
+            logger.warning("[承認エラー] リクエストボディにトークンが含まれていません。")
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing token parameter")
 
         result = await execute_approval_action(token, approver)
@@ -91,7 +100,7 @@ async def handle_direct_approve(request: Request):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error handling approve endpoint: {e}", exc_info=True)
+        logger.error(f"[承認システムエラー] 承認処理中に例外が発生しました: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
@@ -106,56 +115,73 @@ async def process_iam_request_async(payload: Dict[str, Any]):
     user_text = payload.get("text", "")
     requester = payload.get("requester", "Teams User")
 
+    logger.info(f"[パイプライン開始] 申請者 '{requester}' のバックグラウンドタスク処理を開始します。")
+
     try:
         # Step 1: LLM Parsing
+        logger.info("[ステップ 1/4: AIパース] Gemini Flash Lite で申請文面を自然言語解析中...")
         parsed_request = await asyncio.to_thread(parse_request_with_llm, user_text)
         parsed_request["requester"] = requester
+        logger.info(f"[ステップ 1/4 完了] 解析結果: アクション='{parsed_request.get('action')}', 対象グループ='{parsed_request.get('group_email')}', 対象メンバー='{parsed_request.get('member_email')}'")
 
         # Step 2: Guardrail Validation
+        logger.info("[ステップ 2/4: ガードレール] セキュリティ検証を実行中 (アタッチメント、メール形式、ドメイン制限)...")
         validate_request_guardrails(parsed_request)
+        logger.info("[ステップ 2/4 完了] セキュリティガードレール検証に合格しました。")
 
         # Step 3: DB-less Signed Token Creation
+        logger.info("[ステップ 3/4: トークン生成] DBレス HMAC-SHA256 署名付き承認トークンを生成中...")
         signed_token = token_service.create_approval_token(parsed_request)
+        logger.info("[ステップ 3/4 完了] 署名トークンの生成が完了しました。")
 
         # Step 4: Send Approval Card to Admin Channel
+        logger.info("[ステップ 4/4: 承認カード送信] 管理者専用チャネルへ承認ボタン付き Adaptive Card を自動投稿中...")
         sent = await send_admin_approval_card_async(
             webhook_url=settings.admin_webhook_url,
             request_data=parsed_request,
             signed_token=signed_token
         )
 
-        if not sent:
-            logger.warning("Failed to send approval card to Admin channel via Webhook.")
+        if sent:
+            logger.info(f"[パイプライン正常完了] 申請者 '{requester}' の承認カードを管理者チャネルへ送信完了しました。")
+        else:
+            logger.warning("[送信警告] 管理者チャネルへの承認カード投稿に失敗しました。")
 
     except GuardrailValidationError as e:
         # User-facing prompt or security rejection notice
         error_msg = f"ℹ️ **申請案内 / セキュリティ判定:** {e}"
-        logger.warning(error_msg)
+        logger.warning(f"[ガードレール判定結果] {e}")
         await send_teams_text_message_async(settings.notification_webhook_url or settings.admin_webhook_url, error_msg)
     except Exception as e:
         error_msg = f"❌ **リクエスト処理中にエラーが発生しました:** {e}"
-        logger.error(error_msg, exc_info=True)
+        logger.error(f"[パイプラインエラー] 予期せぬシステム例外が発生しました: {e}", exc_info=True)
         await send_teams_text_message_async(settings.admin_webhook_url, error_msg, title="システムエラー")
 
 
 async def execute_approval_action(token: str, approver: str = "Administrator") -> Dict[str, Any]:
     """
-    Decodes and verifies token payload, then executes Workspace Group or Google Cloud IAM operations.
-    Completion messages go to the origin request channel/thread (`NOTIFICATION_WEBHOOK_URL`),
+    Decodes and verifies token payload, then executes Workspace Group operations.
+    Completion messages go to origin request channel (`NOTIFICATION_WEBHOOK_URL`),
     and admin logs go to `ADMIN_WEBHOOK_URL`.
     """
+    logger.info("[実行ステップ 1/4: トークン検証] HMAC 署名および有効期限 (3日間) を検証中...")
     # 1. Verify token signature and expiration
     request_data = token_service.verify_signed_token(token)
     if not request_data:
+        logger.warning("[承認実行失敗] 無効または有効期限切れの承認トークンです。")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="無効な承認トークンか、改ざん検出/有効期限切れです。"
         )
+    logger.info(f"[トークン検証成功] トークンは正当です (申請ID: '{request_data.get('req_id')}')")
 
     # 2. Re-verify guardrails
+    logger.info("[実行ステップ 2/4: ガードレール再確認] パラメータを安全ガードレールで再検証中...")
     try:
         validate_request_guardrails(request_data)
+        logger.info("[ガードレール再確認成功] 安全性の再検証にパスしました。")
     except GuardrailValidationError as e:
+        logger.warning(f"[ガードレール再確認失敗] ガードレール検証に失敗しました: {e}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"ガードレール検証失敗: {e}")
 
     action = request_data.get("action")
@@ -168,6 +194,8 @@ async def execute_approval_action(token: str, approver: str = "Administrator") -
 
     try:
         # 3. Execute requested API action
+        logger.info(f"[実行ステップ 3/4: API実行] Google Cloud Identity API を呼び出し中 (アクション: '{action}', 対象グループ: '{group_email}', 対象メンバー: '{member_email}')...")
+
         if action == "add_member":
             api_response = workspace_group_service.add_member_to_group(group_email, member_email)
             success_message = f"Googleグループ `{group_email}` にユーザー `{member_email}` を正常に追加しました。 (申請ID: {req_id})"
@@ -179,13 +207,18 @@ async def execute_approval_action(token: str, approver: str = "Administrator") -
         else:
             raise ValueError(f"未知のアクションです: {action}")
 
+        logger.info(f"[API実行成功] アクション '{action}' が完了しました: {success_message}")
+
         # 4. Completion notice goes to original request channel thread / notification channel
+        logger.info("[実行ステップ 4/4: 通知送信] Teams チャネルへ処理完了通知を送信中...")
         completion_text = f"🎉 **申請の処理が完了しました**\n\n{success_message}\n(承認者: {approver})"
         await send_teams_text_message_async(settings.notification_webhook_url or settings.admin_webhook_url, completion_text)
         
         # Log to Admin Channel as well
         admin_log_text = f"ℹ️ **承認完了ログ** (ID: {req_id})\n{success_message} (承認者: {approver})"
         await send_teams_text_message_async(settings.admin_webhook_url, admin_log_text)
+
+        logger.info(f"[承認ワークフロー完了] 申請ID '{req_id}' の一連の処理が正常に完結しました。")
 
         return {
             "status": "success",
@@ -195,9 +228,9 @@ async def execute_approval_action(token: str, approver: str = "Administrator") -
 
     except Exception as e:
         error_msg = f"❌ **権限実行エラー (ID: {req_id}):** {e}"
-        logger.error(error_msg, exc_info=True)
+        logger.error(f"[API実行エラー] Google Workspace 操作の実行に失敗しました: {e}", exc_info=True)
         # Errors go to Admin Channel
-        await send_teams_text_message_async(settings.admin_webhook_url, error_msg, title="⚠️ Google Cloud / Workspace IAM 処理エラー")
+        await send_teams_text_message_async(settings.admin_webhook_url, error_msg, title="⚠️ Google Workspace 処理エラー")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"権限実行エラー: {str(e)}"

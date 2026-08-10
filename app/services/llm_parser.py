@@ -38,7 +38,7 @@ def parse_request_with_llm(user_message: str) -> Dict[str, Any]:
     :return: Dictionary containing parsed action, group_email, member_email
     """
     cleaned_message = _clean_teams_mention(user_message)
-    logger.info(f"Parsing user message via Gemini Flash Lite: '{cleaned_message}'")
+    logger.info(f"[AIパース開始] Gemini Flash Lite で申請メッセージを解析中: '{cleaned_message}'")
 
     msg_hash = hashlib.md5(cleaned_message.encode("utf-8")).hexdigest()
 
@@ -46,7 +46,7 @@ def parse_request_with_llm(user_message: str) -> Dict[str, Any]:
     if settings.llm_cost_enable_cache and msg_hash in _PARSING_CACHE:
         cache_time, cached_result = _PARSING_CACHE[msg_hash]
         if time.time() - cache_time < settings.llm_cost_cache_ttl_seconds:
-            logger.info(f"⚡ [MEMORY CACHE HIT] Returning cached Gemini result (0 API tokens billed).")
+            logger.info("[メモリキャッシュヒット] 過去の解析結果をキャッシュから即時取得しました (課金トークン数: 0)。")
             return cached_result.copy()
 
     # Call Google GenAI SDK (gemini-flash-lite)
@@ -83,10 +83,10 @@ def parse_request_with_llm(user_message: str) -> Dict[str, Any]:
         if settings.llm_cost_enable_cache:
             _PARSING_CACHE[msg_hash] = (time.time(), parsed_result)
 
-        logger.info(f"Successfully parsed via Google GenAI ({settings.gemini_model_name}): {parsed_result}")
+        logger.info(f"[AIパース成功] Google GenAI ({settings.gemini_model_name}) による解析が完了しました: {parsed_result}")
         return parsed_result
     except Exception as e:
-        logger.warning(f"Google GenAI SDK call failed or unavailable ({e}). Utilizing heuristic fallback parser.")
+        logger.warning(f"[AIパース警告] Google GenAI SDK の呼び出しに失敗したため、正規表現ヒューリスティックパーサーへ切替えます ({e})。")
         return _heuristic_fallback_parser(cleaned_message)
 
 
@@ -133,5 +133,5 @@ def _heuristic_fallback_parser(text: str) -> Dict[str, Any]:
         "group_email": group_email,
         "member_email": member_email
     }
-    logger.info(f"Heuristic parser result: {result}")
+    logger.info(f"[ヒューリスティックパース結果] 抽出結果: {result}")
     return result

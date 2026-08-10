@@ -26,7 +26,7 @@ class SignedTokenService:
         else:
             # Ephemeral In-Memory Key (generated once in RAM per container startup)
             self._key = secrets.token_bytes(32)
-            logger.info("🔑 Ephemeral In-Memory Signing Key initialized in RAM.")
+            logger.info("[暗号鍵初期化] メモリ内一次性署名鍵 (256ビット RAM Key) を生成しました。")
 
     def create_approval_token(self, request_data: Dict[str, Any], ttl_seconds: Optional[int] = None) -> str:
         """
@@ -54,7 +54,7 @@ class SignedTokenService:
         b64_signature = base64.urlsafe_b64encode(signature).decode("utf-8").rstrip("=")
 
         token = f"{b64_payload}.{b64_signature}"
-        logger.info(f"Generated signed token (req_id: {payload['req_id']}, exp: {expires_at})")
+        logger.info(f"[トークン生成完了] 署名トークンを発行しました (申請ID: {payload['req_id']}, 有効期限タイムスタンプ: {expires_at})")
         return token
 
     def verify_signed_token(self, token: str) -> Optional[Dict[str, Any]]:
@@ -64,7 +64,7 @@ class SignedTokenService:
         try:
             parts = token.split(".")
             if len(parts) != 2:
-                logger.warning("Invalid token format (missing dot separator).")
+                logger.warning("[トークンフォーマットエラー] ドット区切りフォーマットが無効です。")
                 return None
 
             b64_payload, b64_signature = parts
@@ -74,7 +74,7 @@ class SignedTokenService:
             expected_b64_sig = base64.urlsafe_b64encode(expected_sig).decode("utf-8").rstrip("=")
 
             if not hmac.compare_digest(b64_signature, expected_b64_sig):
-                logger.warning("🚨 TOKEN TAMPERING DETECTED! HMAC signature mismatch.")
+                logger.warning("[トークン改ざん検知] HMAC 署名が不一致です。改ざんされたトークンを拒否しました。")
                 return None
 
             # Decode payload
@@ -86,14 +86,14 @@ class SignedTokenService:
             now = int(time.time())
             exp = payload.get("exp", 0)
             if now > exp:
-                logger.warning(f"TOKEN EXPIRED! (exp: {exp}, now: {now})")
+                logger.warning(f"[トークン有効期限切れ] トークンの有効期限が切れています (有効期限: {exp}, 現在時刻: {now})。")
                 return None
 
-            logger.info(f"Signed token verified successfully for req_id '{payload.get('req_id')}'.")
+            logger.info(f"[トークン検証成功] 申請ID '{payload.get('req_id')}' の署名検証に成功しました。")
             return payload
 
         except Exception as e:
-            logger.error(f"Failed to verify signed token: {e}", exc_info=True)
+            logger.error(f"[トークン検証例外] 署名トークンの検証処理中にエラーが発生しました: {e}", exc_info=True)
             return None
 
 

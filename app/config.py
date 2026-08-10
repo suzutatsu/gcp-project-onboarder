@@ -99,10 +99,10 @@ class Settings(BaseSettings):
     def check_security_warnings(self):
         """Logs security diagnostics."""
         if not self.secret_key:
-            logger.info("🔒 [KEYLESS SECURITY] Ephemeral In-Memory Key generated (Zero secret storage on disk)")
+            logger.info("[セキュリティ] メモリ内一次性署名鍵 (RAM Key) を生成しました (ディスク保存ゼロ)。")
 
         if self.allowed_domains:
-            logger.info(f"🛡️ [GUARDRAIL] Domain whitelist configured: {self.allowed_domains}")
+            logger.info(f"[ガードレール] 許可ドメインリストを設定しました: {self.allowed_domains}")
 
 
 # Global settings singleton instance
