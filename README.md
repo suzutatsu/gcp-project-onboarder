@@ -163,12 +163,9 @@ pytest -v
 # 1. Secret Manager へ Teams HMAC トークンを登録
 gcloud secrets create TEAMS_SECURITY_TOKEN --data-file=- <<< "your_teams_outgoing_webhook_hmac_token_base64"
 
-# 2. コンテナイメージのビルド
-gcloud builds submit --tag gcr.io/<PROJECT_ID>/gcp-project-onboarder
-
-# 3. Cloud Run へのデプロイ (Secret Manager 連携)
+# 2. Cloud Run へソースコードから直接デプロイ (ビルド＆デプロイを1コマンドで実行)
 gcloud run deploy gcp-project-onboarder \
-    --image gcr.io/<PROJECT_ID>/gcp-project-onboarder \
+    --source . \
     --region asia-northeast1 \
     --service-account="gcp-bot-sa@<PROJECT_ID>.iam.gserviceaccount.com" \
     --allow-unauthenticated \
