@@ -1,7 +1,7 @@
 import logging
 from typing import List
 from pydantic import Field
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
 
@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     Application Settings loaded from environment variables or .env file.
     Designed for zero secret storage on disk (Keyless / Ephemeral In-Memory Keys).
     """
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     # Application environment
     env: str = Field(default="development", description="Environment mode: development | production")

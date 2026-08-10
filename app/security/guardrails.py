@@ -36,21 +36,22 @@ def validate_request_guardrails(
             f"許可されていないアクションです: '{action}'. (許可アクション: {', '.join(sorted(ALLOWED_ACTIONS))})"
         )
 
-    # 1. Validate Group Email Format (Sanitize null/none strings & apply DEFAULT_GROUP_EMAIL fallback if unassigned)
+    # 1. Validate Group Email Format (Sanitize non-email strings / nulls & apply DEFAULT_GROUP_EMAIL fallback)
     group_email = request.get("group_email")
-    if not group_email or str(group_email).strip().lower() in ["null", "none", "undefined", ""]:
+    is_valid_group_email = bool(group_email and EMAIL_REGEX.match(str(group_email)))
+
+    if not is_valid_group_email:
         if settings.default_group_email:
+            logger.info(f"[ガードレール補正] グループ未指定・非メール形式 ('{group_email}') のため、デフォルトグループ '{settings.default_group_email}' を適用しました。")
             group_email = settings.default_group_email
             request["group_email"] = group_email
-            logger.info(f"[ガードレール補正] グループ未指定のためデフォルトグループ '{group_email}' を適用しました。")
         else:
-            group_email = None
-            request["group_email"] = None
+            if not group_email or str(group_email).strip().lower() in ["null", "none", "undefined", ""]:
+                request["group_email"] = None
+                raise GuardrailValidationError("対象のGoogleグループが判別できませんでした。グループメールアドレス（例: group-dev@company.com）を明記して再度ご依頼ください。")
+            else:
+                raise GuardrailValidationError(f"無効なグループメールアドレスフォーマットです: '{group_email}'")
 
-    if not group_email:
-        raise GuardrailValidationError("対象のGoogleグループが判別できませんでした。グループメールアドレス（例: group-dev@company.com）を明記して再度ご依頼ください。")
-    if not EMAIL_REGEX.match(group_email):
-        raise GuardrailValidationError(f"無効なグループメールアドレスフォーマットです: '{group_email}'")
     _validate_domain(group_email, domains_whitelist)
 
     # 2. Validate Member Email
@@ -65,7 +66,7 @@ def validate_request_guardrails(
         raise GuardrailValidationError(f"無効なメンバーメールアドレスフォーマットです: '{member_email}'")
     _validate_domain(member_email, domains_whitelist)
 
-    logger.info(f"Guardrail validation passed successfully for action '{action}'")
+    logger.info(f"[ガードレール検証成功] アクション '{action}' の全検証にパスしました。")
 
 
 def _validate_domain(email: str, whitelisted_domains: List[str]) -> None:

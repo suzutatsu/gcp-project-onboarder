@@ -54,6 +54,7 @@ Cloud Run にデプロイする際、実行用のサービスアカウントを�
 
 ```bash
 # 例: サービスアカウントおよび Secret Manager を指定して Cloud Run デプロイ
+# --region は Cloud Run コンテナの配置先リージョン（Vertex AI の GCP_LOCATION とは別設定）
 gcloud run deploy gcp-project-onboarder \
     --source . \
     --region us-central1 \
@@ -110,11 +111,15 @@ export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service-account-key.json"
 
 | パラメータ名 | デフォルト値 / 設定例 | 説明 |
 | :--- | :--- | :--- |
-| **`GCP_LOCATION`** | `us` | Google Cloud のリージョン。US マルチリージョン (`us`) 推奨。 |
+| **`TEAMS_SECURITY_TOKEN`** | (必須) | Teams Outgoing Webhook の HMAC セキュリティトークン（Base64）。本番環境では Secret Manager 経由で注入。 |
+| **`ADMIN_WEBHOOK_URL`** | 空 | 管理者チャネルへの承認リクエスト送信用 Incoming Webhook URL。未設定時は単一チャネルモードで動作。 |
+| **`NOTIFICATION_WEBHOOK_URL`** | 空 | 処理完了通知の送信先 Incoming Webhook URL。未設定時は `ADMIN_WEBHOOK_URL` を使用。 |
+| **`GCP_LOCATION`** | `us` | Vertex AI (Gemini) の API エンドポイントリージョン。US マルチリージョン (`us`) 推奨。 |
 | **`GEMINI_MODEL_NAME`** | `gemini-3.5-flash-lite` | 自然言語解析に使用する Gemini のモデル名。 |
 | **`DEFAULT_GROUP_EMAIL`** | 空 (例: `group-dev@example.com`) | メッセージ内でグループメールアドレスが省略された場合に使用されるデフォルトのグループアドレス。 |
 | **`ALLOWED_EMAIL_DOMAINS`** | 空 (例: `example.com`) | 申請を許可するユーザーのメールアドレスドメインのカンマ区切りリスト。空の場合はドメイン制限なし。 |
 | **`TOKEN_TTL_SECONDS`** | `259200` (3日間) | 承認ボタン（トークン）の有効期限（秒）。 |
+| **`SECRET_KEY`** | 空 (自動生成) | 承認トークン署名用の暗号鍵。空欄時はコンテナ起動時に RAM 内で自動生成。 |
 | **`LLM_COST_ENABLE_CACHE`** | `true` | メッセージ解析結果のインメモリキャッシュを有効化。同一内容の申請における API 呼び出しを削減します。 |
 | **`LLM_COST_CACHE_TTL_SECONDS`** | `2592000` (30日間) | メッセージ解析結果キャッシュの有効期限（秒）。 |
 | **`LLM_COST_MAX_OUTPUT_TOKENS`** | `150` | Gemini からの応答出力トークン数の上限値。 |
@@ -135,8 +140,7 @@ gcp-project-onboarder/
 │   └── services/
 │       ├── llm_parser.py         # Gemini (Vertex AI) による自然言語解析
 │       ├── workspace_service.py  # Google Cloud Identity Groups API 連携
-│       ├── teams_notifier.py     # Teams 通知・Adaptive Card 送信
-│       └── secret_manager_service.py # Secret Manager 連携
+│       └── teams_notifier.py     # Teams 通知・Adaptive Card 送信
 ├── tests/                        # テストコード
 ├── Dockerfile                    # Docker イメージビルド用ファイル
 ├── .gcloudignore                 # Cloud Run デプロイ時除外設定
@@ -168,6 +172,7 @@ pytest -v
 gcloud secrets create TEAMS_SECURITY_TOKEN --data-file=- <<< "your_teams_outgoing_webhook_hmac_token_base64"
 
 # 2. Cloud Run へソースコードから直接デプロイ (ビルド＆デプロイを1コマンドで実行)
+# --region は Cloud Run コンテナの配置先リージョン（Vertex AI の GCP_LOCATION とは別設定）
 gcloud run deploy gcp-project-onboarder \
     --source . \
     --region us-central1 \

@@ -16,7 +16,7 @@ def verify_teams_signature(body_bytes: bytes, auth_header: str, secret_token: st
     :return: True if valid, False otherwise
     """
     if not auth_header or not secret_token:
-        logger.warning("Signature verification failed: missing authorization header or security token.")
+        logger.warning("[HMAC検証失敗] Authorization ヘッダーまたはセキュリティトークンが未設定です。")
         return False
 
     # Extract received signature token
@@ -40,10 +40,10 @@ def verify_teams_signature(body_bytes: bytes, auth_header: str, secret_token: st
         is_valid = hmac.compare_digest(computed_signature.strip(), received_signature.strip())
         if not is_valid:
             logger.warning(
-                f"HMAC signature mismatch. Received length={len(received_signature)}, "
-                f"Computed length={len(computed_signature)}"
+                f"[HMAC署名不一致] 受信署名長={len(received_signature)}, "
+                f"算出署名長={len(computed_signature)}"
             )
         return is_valid
     except Exception as e:
-        logger.error(f"Unexpected error during HMAC signature verification: {e}", exc_info=True)
+        logger.error(f"[HMAC検証例外] 署名検証中に予期せぬエラーが発生しました: {e}", exc_info=True)
         return False

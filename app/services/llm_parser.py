@@ -86,9 +86,10 @@ def parse_request_with_llm(user_message: str) -> Dict[str, Any]:
 
         parsed_result = json.loads(response_text)
 
-        # Sanitize null/none string values from LLM JSON and apply DEFAULT_GROUP_EMAIL fallback if omitted
+        # Sanitize null/none or non-email string values from LLM JSON and apply DEFAULT_GROUP_EMAIL fallback if omitted
         raw_group = parsed_result.get("group_email")
-        if not raw_group or str(raw_group).strip().lower() in ["null", "none", "undefined", ""]:
+        is_valid_group = bool(raw_group and re.match(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", str(raw_group)))
+        if not is_valid_group:
             parsed_result["group_email"] = settings.default_group_email if settings.default_group_email else None
 
         raw_member = parsed_result.get("member_email")

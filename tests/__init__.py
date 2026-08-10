@@ -1,3 +1,3 @@
 """
-Test suite package for Teams GCP IAM Automation Agent.
+Test suite package for GCP Project Onboarder.
 """
