@@ -1,0 +1,39 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Environment variable secret files (DO NOT COMMIT SECRETS)
+.env
+.env.local
+.env.*.local
+*.env
+
+# Pytest / Cache
+.pytest_cache/
+.cache/
+.coverage
+htmlcov/
+
+# IDE and OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Private logs
+*.log
