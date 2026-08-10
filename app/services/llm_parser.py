@@ -32,7 +32,7 @@ def parse_request_with_llm(user_message: str) -> Dict[str, Any]:
     """
     Parses a user message using ultra-fast & low-cost Gemini Flash Lite:
     1. In-Memory Cache Check -> Returns cached result if recently parsed
-    2. Gemini Flash Lite SDK Call -> Ultra-low cost (< $0.0001/req) & ultra-fast (< 300ms)
+    2. Gemini Flash Lite SDK Call -> Ultra-low cost (< $0.0001/req) & ultra-fast (< 300ms) with 3s hard timeout cap
 
     :param user_message: Natural language request message from Teams user
     :return: Dictionary containing parsed action, group_email, member_email
@@ -49,13 +49,22 @@ def parse_request_with_llm(user_message: str) -> Dict[str, Any]:
             logger.info("[メモリキャッシュヒット] 過去の解析結果をキャッシュから即時取得しました (課金トークン数: 0)。")
             return cached_result.copy()
 
-    # Call Google GenAI SDK (gemini-flash-lite)
+    # Call Google GenAI SDK (gemini-flash-lite via Vertex AI)
     try:
         from google import genai
         from google.genai import types
 
         project_id = settings.gcp_project_id if settings.gcp_project_id else None
-        client = genai.Client(project=project_id, location=settings.gcp_location)
+        
+        # Configure client with vertexai=True and strict 3.0 second (3000 ms) timeout cap
+        client = genai.Client(
+            vertexai=True,
+            project=project_id,
+            location=settings.gcp_location,
+            http_options=types.HttpOptions(
+                timeout=3000  # Hard cap at 3.0 seconds to prevent 5-minute hang/retry
+            )
+        )
 
         response = client.models.generate_content(
             model=settings.gemini_model_name,
@@ -83,16 +92,19 @@ def parse_request_with_llm(user_message: str) -> Dict[str, Any]:
         if settings.llm_cost_enable_cache:
             _PARSING_CACHE[msg_hash] = (time.time(), parsed_result)
 
-        logger.info(f"[AIパース成功] Google GenAI ({settings.gemini_model_name}) による解析が完了しました: {parsed_result}")
+        logger.info(f"[AIパース成功] Google GenAI Vertex AI ({settings.gemini_model_name}) による解析が完了しました: {parsed_result}")
         return parsed_result
     except Exception as e:
-        logger.warning(f"[AIパース警告] Google GenAI SDK の呼び出しに失敗したため、正規表現ヒューリスティックパーサーへ切替えます ({e})。")
+        logger.warning(
+            f"[AIパース例外・タイムアウト] Google GenAI SDK の呼び出しに失敗しました (エラー詳細: {e})。ヒューリスティックパーサーへフォールバックします。",
+            exc_info=True  # Logs complete Python stack trace to Cloud Logging
+        )
         return _heuristic_fallback_parser(cleaned_message)
 
 
 def _clean_teams_mention(text: str) -> str:
     """Removes HTML tags and Teams mention tags."""
-    text = re.sub(r"<at>.*?</at>", "", text)
+    text = re.sub(r"<at>.*.*?/at>", "", text)
     text = re.sub(r"<[^>]+>", "", text)
     return text.strip()
 
