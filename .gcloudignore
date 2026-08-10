@@ -1,0 +1,35 @@
+# Ignore git repository data
+.git/
+.gitignore
+
+# Ignore Virtual Environments
+venv/
+env/
+ENV/
+
+# Ignore Tests and test caches (Do not deploy test files to Cloud Run)
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Ignore Environment variable files and samples
+.env
+.env.*
+.env.example
+
+# Ignore Documentation & Markdown files
+*.md
+README.md
+
+# Ignore Python byte-compiled files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore IDE configuration and OS files
+.vscode/
+.idea/
+.DS_Store
+*.log

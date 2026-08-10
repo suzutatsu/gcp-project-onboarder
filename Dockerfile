@@ -10,8 +10,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
-COPY . .
+# Copy application code only (Excludes tests, docs, and setup files)
+COPY app /app/app
 
 # Cloud Run injects PORT environment variable (default 8080)
 EXPOSE 8080
